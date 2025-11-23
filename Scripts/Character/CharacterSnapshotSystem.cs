@@ -64,13 +64,28 @@ public class CharacterSnapshotSystem : MonoBehaviour
             return;
         }
 
-        // Layer validation (kritik!)
+        // Layer validation (kritik!) - FALLBACK ADDED
         characterPreviewLayer = LayerMask.NameToLayer("CharacterPreview");
         if (characterPreviewLayer == -1)
         {
-            Debug.LogError("[CharacterSnapshot] CRITICAL: 'CharacterPreview' layer not found! Please add it in Project Settings > Tags and Layers");
-            enabled = false; // Sistemi devre dışı bırak
-            return;
+            Debug.LogWarning("[CharacterSnapshot] WARNING: 'CharacterPreview' layer not found!");
+
+            // FALLBACK: UI layer kullan (HeadSnapshot gibi)
+            characterPreviewLayer = LayerMask.NameToLayer("UI");
+
+            if (characterPreviewLayer == -1)
+            {
+                Debug.LogError("[CharacterSnapshot] CRITICAL: Neither 'CharacterPreview' nor 'UI' layer found! System disabled.");
+                enabled = false;
+                return;
+            }
+
+            Debug.LogWarning($"[CharacterSnapshot] Using FALLBACK layer 'UI' (layer {characterPreviewLayer}) instead of CharacterPreview");
+            Debug.LogWarning("[CharacterSnapshot] RECOMMENDED: Add 'CharacterPreview' layer in Project Settings > Tags and Layers for better isolation");
+        }
+        else
+        {
+            Debug.Log($"[CharacterSnapshot] Using 'CharacterPreview' layer (layer {characterPreviewLayer})");
         }
 
         LogDebug($"Initialized. Layer: {characterPreviewLayer}, Resolution: {snapshotResolution}");
@@ -407,12 +422,19 @@ public class CharacterSnapshotSystem : MonoBehaviour
             snapshotCamera.enabled = false;
 
             Vector3 playerPos = localPlayer.transform.position;
-            tempCameraObj.transform.position = playerPos + Vector3.back * cameraDistance;
+            Vector3 cameraPos = playerPos + Vector3.back * cameraDistance;
+            tempCameraObj.transform.position = cameraPos;
             tempCameraObj.transform.LookAt(playerPos);
+
+            // DEBUG: Kamera ve karakter pozisyonları
+            Debug.Log($"[CharacterSnapshot] Camera Setup: PlayerPos={playerPos}, CameraPos={cameraPos}, Distance={cameraDistance}");
+            Debug.Log($"[CharacterSnapshot] Camera LookAt target: {playerPos}");
 
             // Character'ı geçici layer'a al
             var originalLayers = new System.Collections.Generic.Dictionary<Transform, int>();
-            SetCharacterLayer(character4D.Front.transform, characterPreviewLayer, originalLayers);
+            int objectsLayerChanged = SetCharacterLayer(character4D.Front.transform, characterPreviewLayer, originalLayers);
+
+            Debug.Log($"[CharacterSnapshot] Changed {objectsLayerChanged} objects to layer {characterPreviewLayer} for rendering");
 
             // RenderTexture oluştur - PLATFORM UYUMLU FORMAT + RETRY LOGIC
             RenderTextureFormat format = GetBestRenderTextureFormat();
@@ -481,8 +503,28 @@ public class CharacterSnapshotSystem : MonoBehaviour
 
             snapshotCamera.targetTexture = renderTexture;
 
+            // MALI GPU FIX: Explicit RenderTexture clear (garbage data önleme)
+            if (IsMaliGPU)
+            {
+                RenderTexture previousActive = RenderTexture.active;
+                RenderTexture.active = renderTexture;
+                GL.Clear(true, true, Color.clear);
+                RenderTexture.active = previousActive;
+                Debug.Log("[CharacterSnapshot] MALI: Explicitly cleared RenderTexture to prevent garbage data");
+            }
+
             // Render et
             snapshotCamera.Render();
+
+            // VALIDATION: RenderTexture render edildi mi kontrol et
+            if (renderTexture == null || !renderTexture.IsCreated())
+            {
+                Debug.LogError("[CharacterSnapshot] RenderTexture is null or not created after Render()!");
+                RestoreCharacterLayers(originalLayers);
+                yield break;
+            }
+
+            Debug.Log($"[CharacterSnapshot] Camera.Render() completed. RenderTexture: {renderTexture.width}x{renderTexture.height}, Format: {renderTexture.format}");
 
             // CRITICAL: Bazı mobil GPU'lar için RenderTexture.active atanmasından sonra frame bekle
             RenderTexture.active = renderTexture;
@@ -648,15 +690,18 @@ public class CharacterSnapshotSystem : MonoBehaviour
         Debug.LogWarning("[CharacterSnapshot] Using fallback placeholder - snapshot failed");
     }
 
-    private void SetCharacterLayer(Transform parent, int newLayer, System.Collections.Generic.Dictionary<Transform, int> originalLayers)
+    private int SetCharacterLayer(Transform parent, int newLayer, System.Collections.Generic.Dictionary<Transform, int> originalLayers)
     {
+        int count = 1; // Parent kendisi
         originalLayers[parent] = parent.gameObject.layer;
         parent.gameObject.layer = newLayer;
 
         foreach (Transform child in parent)
         {
-            SetCharacterLayer(child, newLayer, originalLayers);
+            count += SetCharacterLayer(child, newLayer, originalLayers);
         }
+
+        return count;
     }
 
     private void RestoreCharacterLayers(System.Collections.Generic.Dictionary<Transform, int> originalLayers)

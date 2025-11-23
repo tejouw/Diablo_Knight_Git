@@ -36,6 +36,22 @@ public class CharacterSnapshotSystem : MonoBehaviour
     private int characterPreviewLayer = -1; // Cache layer index
     private bool hasAttemptedSnapshot = false;
 
+    // Mali GPU detection cache
+    private bool? isMaliGPU = null;
+    private bool IsMaliGPU
+    {
+        get
+        {
+            if (!isMaliGPU.HasValue)
+            {
+                string gpuName = SystemInfo.graphicsDeviceName.ToLower();
+                string gpuVendor = SystemInfo.graphicsDeviceVendor.ToLower();
+                isMaliGPU = gpuName.Contains("mali") || gpuVendor.Contains("arm");
+            }
+            return isMaliGPU.Value;
+        }
+    }
+
     private void Awake()
     {
         if (Instance == null)
@@ -73,6 +89,7 @@ public class CharacterSnapshotSystem : MonoBehaviour
         Debug.Log($"[CharacterSnapshot] GPU: {SystemInfo.graphicsDeviceName}");
         Debug.Log($"[CharacterSnapshot] GPU Vendor: {SystemInfo.graphicsDeviceVendor}");
         Debug.Log($"[CharacterSnapshot] GPU ID: {SystemInfo.graphicsDeviceID}");
+        Debug.Log($"[CharacterSnapshot] MALI GPU DETECTED: {IsMaliGPU}"); // Mali detection
         Debug.Log($"[CharacterSnapshot] Graphics API: {SystemInfo.graphicsDeviceType}");
         Debug.Log($"[CharacterSnapshot] Graphics Memory: {SystemInfo.graphicsMemorySize} MB");
         Debug.Log($"[CharacterSnapshot] Max Texture Size: {SystemInfo.maxTextureSize}");
@@ -371,7 +388,17 @@ public class CharacterSnapshotSystem : MonoBehaviour
             tempCameraObj = new GameObject("TempSnapshotCamera");
             snapshotCamera = tempCameraObj.AddComponent<Camera>();
 
-            snapshotCamera.clearFlags = CameraClearFlags.SolidColor;
+            // MALI GPU FIX: Mali GPU'lar Depth clearFlags tercih eder
+            if (IsMaliGPU)
+            {
+                snapshotCamera.clearFlags = CameraClearFlags.Depth;
+                Debug.Log("[CharacterSnapshot] MALI: Using Depth clearFlags");
+            }
+            else
+            {
+                snapshotCamera.clearFlags = CameraClearFlags.SolidColor;
+            }
+
             snapshotCamera.backgroundColor = Color.clear;
             snapshotCamera.orthographic = true;
             snapshotCamera.orthographicSize = orthographicSize;
@@ -393,8 +420,15 @@ public class CharacterSnapshotSystem : MonoBehaviour
 
             Debug.Log($"[CharacterSnapshot] Creating RenderTexture: Format={format}, AA={antiAliasing}, Size={snapshotResolution}");
 
+            // MALI GPU FIX: Mali GPU'lar 24-bit depth buffer tercih eder
+            int depthBuffer = IsMaliGPU ? 24 : 16;
+            if (IsMaliGPU)
+            {
+                Debug.Log("[CharacterSnapshot] MALI: Using 24-bit depth buffer");
+            }
+
             // RETRY: Önce tercih edilen format/AA ile dene
-            renderTexture = new RenderTexture(snapshotResolution, snapshotResolution, 16, format);
+            renderTexture = new RenderTexture(snapshotResolution, snapshotResolution, depthBuffer, format);
             renderTexture.antiAliasing = antiAliasing;
 
             if (!renderTexture.Create())
@@ -414,7 +448,7 @@ public class CharacterSnapshotSystem : MonoBehaviour
                         Destroy(renderTexture);
                     }
 
-                    renderTexture = new RenderTexture(snapshotResolution, snapshotResolution, 16, RenderTextureFormat.RGB565);
+                    renderTexture = new RenderTexture(snapshotResolution, snapshotResolution, depthBuffer, RenderTextureFormat.RGB565);
                     renderTexture.antiAliasing = 1;
 
                     if (!renderTexture.Create())
@@ -457,6 +491,13 @@ public class CharacterSnapshotSystem : MonoBehaviour
             if (Application.isMobilePlatform)
             {
                 yield return null; // Bir frame bekle
+
+                // MALI GPU FIX: Mali GPU'lar için ek bir frame daha bekle
+                if (IsMaliGPU)
+                {
+                    Debug.Log("[CharacterSnapshot] MALI: Waiting extra frame before ReadPixels");
+                    yield return null; // Mali için ikinci frame
+                }
             }
 
             if (currentSnapshot != null)
@@ -689,9 +730,34 @@ private void ShowPreviewImage()
         return System.Array.Exists(args, arg => arg == "-server" || arg == "-batchmode");
     }
 
-    // PLATFORM UYUMLULUK METODLARI - IMPROVED
+    // PLATFORM UYUMLULUK METODLARI - IMPROVED + MALI SPECIFIC
     private RenderTextureFormat GetBestRenderTextureFormat()
     {
+        // Mali GPU SPECIAL CASE - Mali G6xx serisi bilinen sorunlar
+        if (IsMaliGPU)
+        {
+            Debug.Log("[CharacterSnapshot] Mali GPU detected! Using Mali-optimized format priority");
+
+            // Mali GPU'lar için özel format sıralaması
+            RenderTextureFormat[] maliFormats = new RenderTextureFormat[]
+            {
+                RenderTextureFormat.Default,     // Mali Default format'ı tercih eder
+                RenderTextureFormat.ARGB32,      // İkinci seçenek
+                RenderTextureFormat.RGB565,      // Basit fallback
+                RenderTextureFormat.ARGB4444,    // Düşük kalite
+                RenderTextureFormat.ARGB1555     // Son çare
+            };
+
+            foreach (var format in maliFormats)
+            {
+                if (SystemInfo.SupportsRenderTextureFormat(format))
+                {
+                    Debug.Log($"[CharacterSnapshot] MALI: Selected {format}");
+                    return format;
+                }
+            }
+        }
+
         // Graphics API kontrolü - OpenGL ES 2.0 için özel davranış
         bool isLowEndMobile = Application.isMobilePlatform &&
                              (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.OpenGLES2 ||

@@ -71,11 +71,25 @@ public class CharacterSnapshotSystem : MonoBehaviour
         Debug.Log($"[CharacterSnapshot] Device: {SystemInfo.deviceModel}");
         Debug.Log($"[CharacterSnapshot] OS: {SystemInfo.operatingSystem}");
         Debug.Log($"[CharacterSnapshot] GPU: {SystemInfo.graphicsDeviceName}");
+        Debug.Log($"[CharacterSnapshot] GPU Vendor: {SystemInfo.graphicsDeviceVendor}");
+        Debug.Log($"[CharacterSnapshot] GPU ID: {SystemInfo.graphicsDeviceID}");
         Debug.Log($"[CharacterSnapshot] Graphics API: {SystemInfo.graphicsDeviceType}");
         Debug.Log($"[CharacterSnapshot] Graphics Memory: {SystemInfo.graphicsMemorySize} MB");
         Debug.Log($"[CharacterSnapshot] Max Texture Size: {SystemInfo.maxTextureSize}");
-        Debug.Log($"[CharacterSnapshot] ARGB32 Supported: {SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGB32)}");
-        Debug.Log($"[CharacterSnapshot] Default Format Supported: {SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.Default)}");
+        Debug.Log($"[CharacterSnapshot] Shader Level: {SystemInfo.graphicsShaderLevel}");
+
+        // RenderTexture format desteği
+        Debug.Log($"[CharacterSnapshot] ARGB32: {SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGB32)}");
+        Debug.Log($"[CharacterSnapshot] Default: {SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.Default)}");
+        Debug.Log($"[CharacterSnapshot] RGB565: {SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RGB565)}");
+        Debug.Log($"[CharacterSnapshot] ARGB4444: {SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGB4444)}");
+        Debug.Log($"[CharacterSnapshot] ARGB1555: {SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGB1555)}");
+
+        // Texture format desteği
+        Debug.Log($"[CharacterSnapshot] Texture ARGB32: {SystemInfo.SupportsTextureFormat(TextureFormat.ARGB32)}");
+        Debug.Log($"[CharacterSnapshot] Texture RGBA32: {SystemInfo.SupportsTextureFormat(TextureFormat.RGBA32)}");
+        Debug.Log($"[CharacterSnapshot] Texture RGB24: {SystemInfo.SupportsTextureFormat(TextureFormat.RGB24)}");
+
         Debug.Log($"[CharacterSnapshot] Mobile Platform: {Application.isMobilePlatform}");
         Debug.Log($"[CharacterSnapshot] ===========================");
     }
@@ -141,21 +155,32 @@ public class CharacterSnapshotSystem : MonoBehaviour
 
         if (localPlayer == null)
         {
-            // RETRY: HeadSnapshot gibi 2 saniye sonra tekrar dene
+            // RETRY LOGIC: hasAttemptedSnapshot sayacı yerine retry counter kullan
             if (!hasAttemptedSnapshot)
             {
-                Debug.LogWarning("[CharacterSnapshot] Max wait time reached, retrying in 2 seconds");
+                Debug.LogWarning("[CharacterSnapshot] Max wait time reached (first attempt), retrying in 2 seconds...");
+                hasAttemptedSnapshot = true;
                 yield return new WaitForSeconds(2f);
                 isCapturingSnapshot = false;
                 StartCoroutine(TakeSnapshotWhenReady());
             }
             else
             {
-                // 2. deneme de başarısızsa placeholder göster
-                Debug.LogError("[CharacterSnapshot] Failed to capture snapshot after retry");
+                // 2. deneme de başarısızsa - SON ÇARE: Fallback placeholder göster
+                Debug.LogError("[CharacterSnapshot] CRITICAL: Failed to find/initialize local player after all retries!");
+                Debug.LogError("[CharacterSnapshot] This may indicate:");
+                Debug.LogError("[CharacterSnapshot] 1. Network connection issues");
+                Debug.LogError("[CharacterSnapshot] 2. Character4D component not initialized");
+                Debug.LogError("[CharacterSnapshot] 3. Player tag missing or NetworkObject not setup correctly");
+
                 if (useFallbackPlaceholder && characterPreviewImage != null)
                 {
+                    Debug.LogWarning("[CharacterSnapshot] Displaying fallback placeholder image");
                     ShowFallbackPlaceholder();
+                }
+                else
+                {
+                    Debug.LogError("[CharacterSnapshot] Cannot show fallback - useFallbackPlaceholder disabled or image null");
                 }
                 isCapturingSnapshot = false;
             }
@@ -185,34 +210,81 @@ public class CharacterSnapshotSystem : MonoBehaviour
     // YENİ METOD: Detaylı character hazırlık kontrolü (HeadSnapshot'tan uyarlandı)
     private bool IsCharacterReady(GameObject player)
     {
+        if (player == null)
+        {
+            LogDebug("IsCharacterReady: player is null");
+            return false;
+        }
+
         // NetworkObject kontrol
         NetworkObject networkObj = player.GetComponent<NetworkObject>();
-        if (networkObj == null || !networkObj.IsValid || !networkObj.HasInputAuthority)
+        if (networkObj == null)
+        {
+            LogDebug("IsCharacterReady: NetworkObject component not found");
             return false;
+        }
+
+        if (!networkObj.IsValid)
+        {
+            LogDebug("IsCharacterReady: NetworkObject is not valid");
+            return false;
+        }
+
+        if (!networkObj.HasInputAuthority)
+        {
+            LogDebug("IsCharacterReady: NetworkObject does not have input authority");
+            return false;
+        }
 
         // Character4D kontrol
         Character4D character4D = player.GetComponent<Character4D>();
-        if (character4D == null || character4D.Front == null)
+        if (character4D == null)
+        {
+            LogDebug("IsCharacterReady: Character4D component not found");
             return false;
+        }
+
+        if (character4D.Front == null)
+        {
+            LogDebug("IsCharacterReady: Character4D.Front is null");
+            return false;
+        }
 
         // Character appearance yüklenmiş mi kontrol
         Transform upperBody = character4D.Front.transform.Find("UpperBody");
         if (upperBody == null)
+        {
+            LogDebug("IsCharacterReady: UpperBody transform not found");
             return false;
+        }
 
         // En az bir renderer aktif mi kontrol
         SpriteRenderer[] renderers = character4D.Front.GetComponentsInChildren<SpriteRenderer>(true);
+        if (renderers == null || renderers.Length == 0)
+        {
+            LogDebug("IsCharacterReady: No SpriteRenderers found");
+            return false;
+        }
+
         bool hasActiveRenderer = false;
+        int activeCount = 0;
         foreach (var renderer in renderers)
         {
             if (renderer != null && renderer.enabled && renderer.sprite != null)
             {
                 hasActiveRenderer = true;
-                break;
+                activeCount++;
             }
         }
 
-        return hasActiveRenderer;
+        if (!hasActiveRenderer)
+        {
+            LogDebug($"IsCharacterReady: No active renderers found (total renderers: {renderers.Length})");
+            return false;
+        }
+
+        LogDebug($"IsCharacterReady: Character is READY ({activeCount}/{renderers.Length} active renderers)");
+        return true;
     }
 
     // DEĞİŞTİ: Equipment subscription artık opsiyonel (sadece ek güncellemeler için)
@@ -315,20 +387,62 @@ public class CharacterSnapshotSystem : MonoBehaviour
             var originalLayers = new System.Collections.Generic.Dictionary<Transform, int>();
             SetCharacterLayer(character4D.Front.transform, characterPreviewLayer, originalLayers);
 
-            // RenderTexture oluştur - PLATFORM UYUMLU FORMAT
+            // RenderTexture oluştur - PLATFORM UYUMLU FORMAT + RETRY LOGIC
             RenderTextureFormat format = GetBestRenderTextureFormat();
             int antiAliasing = GetBestAntiAliasing();
 
-            LogDebug($"Creating RenderTexture: Format={format}, AA={antiAliasing}, Size={snapshotResolution}");
+            Debug.Log($"[CharacterSnapshot] Creating RenderTexture: Format={format}, AA={antiAliasing}, Size={snapshotResolution}");
 
+            // RETRY: Önce tercih edilen format/AA ile dene
             renderTexture = new RenderTexture(snapshotResolution, snapshotResolution, 16, format);
             renderTexture.antiAliasing = antiAliasing;
 
             if (!renderTexture.Create())
             {
-                Debug.LogError("[CharacterSnapshot] Failed to create RenderTexture!");
-                RestoreCharacterLayers(originalLayers);
-                yield break;
+                Debug.LogWarning($"[CharacterSnapshot] Failed with Format={format}, AA={antiAliasing}. Retrying with AA=1...");
+
+                // RETRY 1: AA'yı kaldır
+                renderTexture.antiAliasing = 1;
+                if (!renderTexture.Create())
+                {
+                    Debug.LogWarning($"[CharacterSnapshot] Failed with AA=1. Retrying with RGB565...");
+
+                    // RETRY 2: En basit format dene (RGB565)
+                    if (renderTexture != null)
+                    {
+                        renderTexture.Release();
+                        Destroy(renderTexture);
+                    }
+
+                    renderTexture = new RenderTexture(snapshotResolution, snapshotResolution, 16, RenderTextureFormat.RGB565);
+                    renderTexture.antiAliasing = 1;
+
+                    if (!renderTexture.Create())
+                    {
+                        Debug.LogError("[CharacterSnapshot] CRITICAL: Failed to create RenderTexture with all formats!");
+                        RestoreCharacterLayers(originalLayers);
+
+                        // Hata durumunda fallback placeholder göster
+                        if (useFallbackPlaceholder && characterPreviewImage != null)
+                        {
+                            ShowFallbackPlaceholder();
+                        }
+
+                        yield break;
+                    }
+                    else
+                    {
+                        Debug.Log("[CharacterSnapshot] SUCCESS with RGB565, AA=1");
+                    }
+                }
+                else
+                {
+                    Debug.Log($"[CharacterSnapshot] SUCCESS with Format={format}, AA=1");
+                }
+            }
+            else
+            {
+                Debug.Log($"[CharacterSnapshot] SUCCESS with Format={format}, AA={antiAliasing}");
             }
 
             snapshotCamera.targetTexture = renderTexture;
@@ -336,24 +450,67 @@ public class CharacterSnapshotSystem : MonoBehaviour
             // Render et
             snapshotCamera.Render();
 
-            // Texture2D'ye çevir
+            // CRITICAL: Bazı mobil GPU'lar için RenderTexture.active atanmasından sonra frame bekle
             RenderTexture.active = renderTexture;
+
+            // Mobil cihazlarda ReadPixels için ek frame bekle
+            if (Application.isMobilePlatform)
+            {
+                yield return null; // Bir frame bekle
+            }
 
             if (currentSnapshot != null)
             {
                 Destroy(currentSnapshot);
             }
 
-            // Texture format da platform uyumlu
-            TextureFormat textureFormat = SystemInfo.SupportsTextureFormat(TextureFormat.ARGB32)
-                ? TextureFormat.ARGB32
-                : TextureFormat.RGBA32;
+            // Texture format da platform uyumlu - GENİŞLETİLDİ
+            TextureFormat textureFormat;
+
+            if (SystemInfo.SupportsTextureFormat(TextureFormat.ARGB32))
+            {
+                textureFormat = TextureFormat.ARGB32;
+            }
+            else if (SystemInfo.SupportsTextureFormat(TextureFormat.RGBA32))
+            {
+                textureFormat = TextureFormat.RGBA32;
+            }
+            else if (SystemInfo.SupportsTextureFormat(TextureFormat.RGB24))
+            {
+                // Alpha olmadan dene (bazı mobil GPU'lar alpha istemez)
+                textureFormat = TextureFormat.RGB24;
+                Debug.LogWarning("[CharacterSnapshot] Using RGB24 (no alpha) - ARGB32/RGBA32 not supported");
+            }
+            else
+            {
+                // Son çare
+                textureFormat = TextureFormat.RGBA32;
+                Debug.LogWarning("[CharacterSnapshot] Forcing RGBA32 as fallback");
+            }
 
             currentSnapshot = new Texture2D(snapshotResolution, snapshotResolution, textureFormat, false);
-            currentSnapshot.ReadPixels(new Rect(0, 0, snapshotResolution, snapshotResolution), 0, 0);
-            currentSnapshot.Apply();
 
-            LogDebug($"Snapshot captured! Size: {currentSnapshot.width}x{currentSnapshot.height}");
+            try
+            {
+                currentSnapshot.ReadPixels(new Rect(0, 0, snapshotResolution, snapshotResolution), 0, 0);
+                currentSnapshot.Apply();
+                Debug.Log($"[CharacterSnapshot] Snapshot captured! Size: {currentSnapshot.width}x{currentSnapshot.height}, Format: {textureFormat}");
+            }
+            catch (System.Exception readPixelsException)
+            {
+                Debug.LogError($"[CharacterSnapshot] ReadPixels failed: {readPixelsException.Message}");
+                Destroy(currentSnapshot);
+                currentSnapshot = null;
+
+                // ReadPixels başarısız olursa fallback placeholder göster
+                if (useFallbackPlaceholder && characterPreviewImage != null)
+                {
+                    ShowFallbackPlaceholder();
+                }
+
+                RestoreCharacterLayers(originalLayers);
+                yield break;
+            }
 
             // UI'ya uygula
             if (characterPreviewImage != null)
@@ -375,12 +532,23 @@ public class CharacterSnapshotSystem : MonoBehaviour
         }
         catch (System.Exception e)
         {
-            Debug.LogError($"[CharacterSnapshot] Exception during snapshot: {e.Message}\n{e.StackTrace}");
+            Debug.LogError($"[CharacterSnapshot] EXCEPTION during snapshot capture!");
+            Debug.LogError($"[CharacterSnapshot] Exception Type: {e.GetType().Name}");
+            Debug.LogError($"[CharacterSnapshot] Message: {e.Message}");
+            Debug.LogError($"[CharacterSnapshot] StackTrace: {e.StackTrace}");
+
+            // Detaylı cihaz bilgisi tekrar log'la
+            Debug.LogError($"[CharacterSnapshot] Device Info: {SystemInfo.deviceModel}, GPU: {SystemInfo.graphicsDeviceName}, API: {SystemInfo.graphicsDeviceType}");
 
             // Hata durumunda fallback placeholder göster
             if (useFallbackPlaceholder && characterPreviewImage != null && currentSnapshot == null)
             {
+                Debug.LogWarning("[CharacterSnapshot] Showing fallback placeholder due to exception");
                 ShowFallbackPlaceholder();
+            }
+            else if (characterPreviewImage == null)
+            {
+                Debug.LogError("[CharacterSnapshot] Cannot show placeholder - characterPreviewImage is null!");
             }
         }
         finally
@@ -521,23 +689,58 @@ private void ShowPreviewImage()
         return System.Array.Exists(args, arg => arg == "-server" || arg == "-batchmode");
     }
 
-    // PLATFORM UYUMLULUK METODLARI
+    // PLATFORM UYUMLULUK METODLARI - IMPROVED
     private RenderTextureFormat GetBestRenderTextureFormat()
     {
-        // Öncelik sırasıyla format dene
-        RenderTextureFormat[] preferredFormats = new RenderTextureFormat[]
+        // Graphics API kontrolü - OpenGL ES 2.0 için özel davranış
+        bool isLowEndMobile = Application.isMobilePlatform &&
+                             (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.OpenGLES2 ||
+                              SystemInfo.graphicsMemorySize < 512);
+
+        // Öncelik sırasıyla format dene (MOBİL ÖNCE)
+        RenderTextureFormat[] preferredFormats;
+
+        if (isLowEndMobile)
         {
-            RenderTextureFormat.ARGB32,
-            RenderTextureFormat.Default,
-            RenderTextureFormat.ARGBHalf,
-            RenderTextureFormat.ARGB4444
-        };
+            // Düşük seviye mobil cihazlar için basit formatlar
+            preferredFormats = new RenderTextureFormat[]
+            {
+                RenderTextureFormat.RGB565,      // En basit, çoğu mobilde çalışır
+                RenderTextureFormat.ARGB4444,    // Düşük kaliteli alpha
+                RenderTextureFormat.Default,     // Sistem default
+                RenderTextureFormat.ARGB1555,    // Alternatif düşük kalite
+                RenderTextureFormat.R8           // Son çare grayscale
+            };
+        }
+        else if (Application.isMobilePlatform)
+        {
+            // Normal mobil cihazlar
+            preferredFormats = new RenderTextureFormat[]
+            {
+                RenderTextureFormat.ARGB32,      // Standart
+                RenderTextureFormat.Default,     // Sistem default
+                RenderTextureFormat.RGB565,      // Fallback basit
+                RenderTextureFormat.ARGB4444,
+                RenderTextureFormat.ARGBHalf
+            };
+        }
+        else
+        {
+            // Desktop/Console
+            preferredFormats = new RenderTextureFormat[]
+            {
+                RenderTextureFormat.ARGB32,
+                RenderTextureFormat.Default,
+                RenderTextureFormat.ARGBHalf,
+                RenderTextureFormat.ARGB4444
+            };
+        }
 
         foreach (var format in preferredFormats)
         {
             if (SystemInfo.SupportsRenderTextureFormat(format))
             {
-                LogDebug($"Selected RenderTextureFormat: {format}");
+                Debug.Log($"[CharacterSnapshot] Selected RenderTextureFormat: {format} (GraphicsAPI: {SystemInfo.graphicsDeviceType})");
                 return format;
             }
         }
@@ -549,27 +752,27 @@ private void ShowPreviewImage()
 
     private int GetBestAntiAliasing()
     {
-        // Platform'a göre AA seviyesini belirle
-        int[] antiAliasingLevels = new int[] { 2, 4, 8, 1 };
-
-        foreach (int level in antiAliasingLevels)
+        // GÜVENLİK ÖNCE: Mobil cihazlarda AA sorunları yaygın, 1'den başla
+        if (Application.isMobilePlatform)
         {
-            // Mobilde düşük seviye tercih et
-            if (Application.isMobilePlatform && level <= 2)
+            // Düşük bellek cihazlar - AA kullanma
+            if (SystemInfo.graphicsMemorySize < 512 ||
+                SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.OpenGLES2)
             {
-                LogDebug($"Mobile platform detected, using AA={level}");
-                return level;
+                Debug.Log("[CharacterSnapshot] Low-end mobile: AA=1 (disabled)");
+                return 1;
             }
 
-            // Desktop'ta yüksek seviye kullan
-            if (!Application.isMobilePlatform && level > 1)
-            {
-                LogDebug($"Desktop platform, using AA={level}");
-                return level;
-            }
+            // Normal mobil - AA=2 dene, başarısız olursa 1
+            Debug.Log("[CharacterSnapshot] Mobile platform: AA=2");
+            return 2;
         }
-
-        return 1; // Fallback: AA yok
+        else
+        {
+            // Desktop - yüksek kalite
+            Debug.Log("[CharacterSnapshot] Desktop platform: AA=4");
+            return 4;
+        }
     }
 
     private void LogDebug(string message)
